@@ -5,6 +5,8 @@ import numpy as np
 import plotly.express as px
 import joblib
 import os
+import urllib.request
+import shutil
 
 # ==================================================
 # PAGE CONFIGURATION
@@ -86,11 +88,64 @@ RESULTS_PATH = os.path.join(BASE_DIR, "results")
 # ==================================================
 
 @st.cache_resource
+def download_model_file(filename):
+    """
+    Return a local model path. If a large model is not present
+    in the repository checkout, download it from the GitHub Release.
+    """
+
+    os.makedirs(MODEL_PATH, exist_ok=True)
+    file_path = os.path.join(MODEL_PATH, filename)
+
+    # Keep an existing non-empty local model file.
+    if os.path.isfile(file_path) and os.path.getsize(file_path) > 0:
+        return file_path
+
+    release_url = (
+        "https://github.com/Dhanuja416/EnsembleLab/"
+        "releases/download/v1.0.0/"
+        + filename
+    )
+
+    temporary_path = file_path + ".part"
+
+    try:
+        request = urllib.request.Request(
+            release_url,
+            headers={"User-Agent": "EnsembleLab-Streamlit-App"}
+        )
+
+        with urllib.request.urlopen(request, timeout=600) as response:
+            with open(temporary_path, "wb") as output_file:
+                shutil.copyfileobj(response, output_file)
+
+        # Do not leave a partial model file if the download is interrupted.
+        if not os.path.isfile(temporary_path) or os.path.getsize(temporary_path) == 0:
+            raise RuntimeError("The downloaded file is empty.")
+
+        os.replace(temporary_path, file_path)
+
+    except Exception as e:
+        if os.path.exists(temporary_path):
+            os.remove(temporary_path)
+
+        raise RuntimeError(
+            f"Unable to download {filename} from the GitHub Release. "
+            f"Check that release tag v1.0.0 contains an asset with this "
+            f"exact filename. Details: {e}"
+        ) from e
+
+    return file_path
+
+
+@st.cache_resource
 def load_models():
 
-    models = joblib.load(
-        os.path.join(MODEL_PATH, "ensemble_models.pkl")
-    )
+    # These two large files are stored as GitHub Release assets.
+    ensemble_model_path = download_model_file("ensemble_models.pkl")
+    hybrid_metadata_path = download_model_file("hybrid_metadata_model.pkl")
+
+    models = joblib.load(ensemble_model_path)
 
     preprocessor = joblib.load(
         os.path.join(MODEL_PATH, "preprocessor.pkl")
@@ -104,9 +159,7 @@ def load_models():
         os.path.join(MODEL_PATH, "hybrid_text_model.pkl")
     )
 
-    hybrid_metadata_model = joblib.load(
-        os.path.join(MODEL_PATH, "hybrid_metadata_model.pkl")
-    )
+    hybrid_metadata_model = joblib.load(hybrid_metadata_path)
 
     return (
         models,
@@ -125,8 +178,16 @@ def load_results():
     )
 
 
-try:
+# Initialize every variable before loading. If loading fails, stop
+# execution here so the rest of the dashboard cannot use undefined names.
+models = None
+preprocessor = None
+label_encoder = None
+hybrid_text_model = None
+hybrid_metadata_model = None
+results_df = None
 
+try:
     (
         models,
         preprocessor,
@@ -137,8 +198,10 @@ try:
 
     results_df = load_results()
 
-except Exception as e:
+    if results_df is None or results_df.empty:
+        raise ValueError("The model comparison CSV is empty or could not be loaded.")
 
+except Exception as e:
     st.error(f"Could not load project files: {e}")
     st.stop()
 
